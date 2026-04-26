@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+{% block title %}Dashboard - Inventario{% endblock %}
+{% block content %}
+<header class="topbar">
+  <h1>Inventario de Equipos</h1>
+  <div>
+    <span>Hola, {{ username }}</span>
+    <a class="logout" href="{{ url_for('logout') }}">Cerrar sesión</a>
+  </div>
+</header>
+
+<section class="grid">
+  <article class="card">
+    <h2>Registrar equipo</h2>
+    <form method="post" action="{{ url_for('add_equipment') }}">
+      <label for="name">Nombre</label>
+      <input id="name" name="name" type="text" required />
+
+      <label for="serial_number">Serie</label>
+      <input id="serial_number" name="serial_number" type="text" required />
+
+      <label for="area">Área</label>
+      <input id="area" name="area" type="text" required />
+
+      <label for="status">Estado</label>
+      <select id="status" name="status">
+        <option>Disponible</option>
+        <option>En uso</option>
+        <option>Mantenimiento</option>
+        <option>Baja</option>
+      </select>
+
+      <button type="submit">Guardar equipo</button>
+    </form>
+  </article>
+
+  <article class="card">
+    <h2>Equipos registrados</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Nombre</th>
+          <th>Serie</th>
+          <th>Área</th>
+          <th>Estado</th>
+          <th>Fecha</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for item in equipment %}
+        <tr>
+          <td>{{ item.name }}</td>
+          <td>{{ item.serial_number }}</td>
+          <td>{{ item.area }}</td>
+          <td>{{ item.status }}</td>
+          <td>{{ item.created_at }}</td>
+        </tr>
+        {% else %}
+        <tr>
+          <td colspan="5">No hay equipos registrados.</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </article>
+</section>
+{% endblock %}

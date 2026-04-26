@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}Editar equipo - Inventario{% endblock %}
+{% block content %}
+<header class="topbar">
+  <h1>Editar equipo</h1>
+  <a class="logout" href="{{ url_for('index') }}">Volver al inventario</a>
+</header>
+
+<section class="card auth-card">
+  <form method="post">
+    <label for="name">Nombre</label>
+    <input id="name" name="name" type="text" value="{{ item.name }}" required />
+
+    <label for="serial_number">Serie</label>
+    <input id="serial_number" name="serial_number" type="text" value="{{ item.serial_number }}" required />
+
+    <label for="area">Área</label>
+    <input id="area" name="area" type="text" value="{{ item.area }}" required />
+
+    <label for="status">Estado</label>
+    <select id="status" name="status">
+      {% for s in statuses %}
+      <option value="{{ s }}" {% if s == item.status %}selected{% endif %}>{{ s }}</option>
+      {% endfor %}
+    </select>
+
+    <button type="submit">Guardar cambios</button>
+  </form>
+</section>
+{% endblock %}

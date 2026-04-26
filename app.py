@@ -2,16 +2,13 @@ from __future__ import annotations
 
 import os
 import secrets
-import sqlite3
 from functools import wraps
-from pathlib import Path
 from typing import Any, Callable
 
+import psycopg
 from flask import Flask, flash, g, redirect, render_template, request, session, url_for
+from psycopg.rows import dict_row
 from werkzeug.security import check_password_hash, generate_password_hash
-
-BASE_DIR = Path(__file__).resolve().parent
-DATABASE = BASE_DIR / "inventario.db"
 
 EQUIPMENT_STATUSES = ("Disponible", "En uso", "Mantenimiento", "Baja")
 
@@ -19,11 +16,19 @@ app = Flask(__name__)
 app.config["SECRET_KEY"] = os.environ.get("INVENTARIO_SECRET_KEY") or secrets.token_hex(32)
 
 
-def get_db() -> sqlite3.Connection:
+def _database_url() -> str:
+    url = os.environ.get("DATABASE_URL")
+    if not url:
+        raise RuntimeError(
+            "DATABASE_URL no está configurada. Define la cadena de conexión "
+            "Postgres (por ejemplo, la del pooler de Supabase)."
+        )
+    return url
+
+
+def get_db() -> psycopg.Connection:
     if "db" not in g:
-        g.db = sqlite3.connect(DATABASE)
-        g.db.row_factory = sqlite3.Row
-        g.db.execute("PRAGMA foreign_keys = ON")
+        g.db = psycopg.connect(_database_url(), row_factory=dict_row, autocommit=False)
     return g.db
 
 
@@ -34,29 +39,32 @@ def close_db(_: Any) -> None:
         db.close()
 
 
-def init_db() -> None:
-    with sqlite3.connect(DATABASE) as conn:
-        conn.executescript(
-            """
-            CREATE TABLE IF NOT EXISTS users (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                username TEXT UNIQUE NOT NULL,
-                password_hash TEXT NOT NULL
-            );
+SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS users (
+    id SERIAL PRIMARY KEY,
+    username TEXT UNIQUE NOT NULL,
+    password_hash TEXT NOT NULL
+);
 
-            CREATE TABLE IF NOT EXISTS equipment (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL,
-                serial_number TEXT NOT NULL,
-                area TEXT NOT NULL,
-                status TEXT NOT NULL,
-                created_by INTEGER NOT NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (created_by) REFERENCES users(id)
-            );
-            """
-        )
+CREATE TABLE IF NOT EXISTS equipment (
+    id SERIAL PRIMARY KEY,
+    name TEXT NOT NULL,
+    serial_number TEXT NOT NULL,
+    area TEXT NOT NULL,
+    status TEXT NOT NULL,
+    created_by INTEGER NOT NULL REFERENCES users(id),
+    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+);
+"""
+
+
+@app.cli.command("init-db")
+def init_db_command() -> None:
+    """Crea las tablas en la base de datos configurada en DATABASE_URL."""
+    with psycopg.connect(_database_url()) as conn:
+        conn.execute(SCHEMA_SQL)
+    print("Tablas creadas/verificadas correctamente.")
 
 
 def login_required(view: Callable[..., Any]) -> Callable[..., Any]:
@@ -82,15 +90,15 @@ def index() -> str:
     params: list[Any] = []
 
     if query:
-        sql += " AND (name LIKE ? OR serial_number LIKE ? OR area LIKE ?)"
+        sql += " AND (name ILIKE %s OR serial_number ILIKE %s OR area ILIKE %s)"
         like = f"%{query}%"
         params.extend([like, like, like])
 
     if status_filter and status_filter in EQUIPMENT_STATUSES:
-        sql += " AND status = ?"
+        sql += " AND status = %s"
         params.append(status_filter)
 
-    sql += " ORDER BY datetime(updated_at) DESC, id DESC"
+    sql += " ORDER BY updated_at DESC, id DESC"
 
     rows = get_db().execute(sql, params).fetchall()
     return render_template(
@@ -120,13 +128,14 @@ def register() -> str:
         db = get_db()
         try:
             db.execute(
-                "INSERT INTO users (username, password_hash) VALUES (?, ?)",
+                "INSERT INTO users (username, password_hash) VALUES (%s, %s)",
                 (username, generate_password_hash(password)),
             )
             db.commit()
             flash("Usuario creado con éxito. Inicia sesión.", "success")
             return redirect(url_for("login"))
-        except sqlite3.IntegrityError:
+        except psycopg.errors.UniqueViolation:
+            db.rollback()
             flash("El usuario ya existe.", "error")
 
     return render_template("register.html")
@@ -139,7 +148,10 @@ def login() -> str:
         password = request.form.get("password", "")
 
         db = get_db()
-        user = db.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
+        user = db.execute(
+            "SELECT id, username, password_hash FROM users WHERE username = %s",
+            (username,),
+        ).fetchone()
 
         if user is None or not check_password_hash(user["password_hash"], password):
             flash("Credenciales inválidas.", "error")
@@ -184,7 +196,7 @@ def add_equipment() -> str:
     db.execute(
         """
         INSERT INTO equipment (name, serial_number, area, status, created_by)
-        VALUES (?, ?, ?, ?, ?)
+        VALUES (%s, %s, %s, %s, %s)
         """,
         (name, serial_number, area, status, session["user_id"]),
     )
@@ -198,7 +210,7 @@ def add_equipment() -> str:
 def edit_equipment(equipment_id: int) -> str:
     db = get_db()
     item = db.execute(
-        "SELECT id, name, serial_number, area, status FROM equipment WHERE id = ?",
+        "SELECT id, name, serial_number, area, status FROM equipment WHERE id = %s",
         (equipment_id,),
     ).fetchone()
 
@@ -224,9 +236,9 @@ def edit_equipment(equipment_id: int) -> str:
         db.execute(
             """
             UPDATE equipment
-               SET name = ?, serial_number = ?, area = ?, status = ?,
+               SET name = %s, serial_number = %s, area = %s, status = %s,
                    updated_at = CURRENT_TIMESTAMP
-             WHERE id = ?
+             WHERE id = %s
             """,
             (name, serial_number, area, status, equipment_id),
         )
@@ -241,7 +253,7 @@ def edit_equipment(equipment_id: int) -> str:
 @login_required
 def delete_equipment(equipment_id: int) -> str:
     db = get_db()
-    result = db.execute("DELETE FROM equipment WHERE id = ?", (equipment_id,))
+    result = db.execute("DELETE FROM equipment WHERE id = %s", (equipment_id,))
     db.commit()
 
     if result.rowcount == 0:
@@ -249,10 +261,6 @@ def delete_equipment(equipment_id: int) -> str:
     else:
         flash("Equipo eliminado.", "success")
     return redirect(url_for("index"))
-
-
-with app.app_context():
-    init_db()
 
 
 if __name__ == "__main__":
